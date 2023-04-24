@@ -1,8 +1,34 @@
-from sqlalchemy import create_engine, Column, Integer, String, VARBINARY, text
+from sqlalchemy import create_engine, Column, Integer, String, VARBINARY, DATE, text, event
 from sqlalchemy.orm import sessionmaker, declarative_base
+import numpy as np
+from datetime import datetime
 import pandas as pd
 import hashlib
-# from memoryview import memoryview
+from dotenv import dotenv_values
+from tqdm import tqdm
+import logging
+from logging.handlers import RotatingFileHandler
+
+config = dotenv_values(".env")
+
+# Create a logger for SQLAlchemy
+sqlalchemy_logger = logging.getLogger('sqlalchemy')
+
+# Set the logging level to ERROR to only log errors
+sqlalchemy_logger.setLevel(logging.ERROR)
+
+# Create a rotating file handler to log errors to a file
+file_handler = RotatingFileHandler('sqlalchemy_errors.log', maxBytes=1024*1024*5, backupCount=5)
+file_handler.setLevel(logging.ERROR)
+
+# Create a formatter for the log messages
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# Set the formatter for the file handler
+file_handler.setFormatter(formatter)
+
+# Add the file handler to the logger
+sqlalchemy_logger.addHandler(file_handler)
 
 # Define the model
 Base = declarative_base()
@@ -32,90 +58,12 @@ class RecipientInfo(Base):
     created_by = Column(String)
     tin_hash = Column(VARBINARY)
     audit_hash = Column(VARBINARY)
+    last_updated_by = Column(String)
+    last_updated = Column(DATE)
 
-# def calculate_audit_hash(row, session):
-#     audit_hash_query = text("SELECT HASHBYTES('SHA2_256', "
-#                         "CONVERT(NVARCHAR, ISNULL(:tin_type, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:customer_id, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:name1, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:name2, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:address1, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:address2, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:city, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:state_province, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:postal_code, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:tin, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:source_file, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:freeze_electronic_consent_ind, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:entity_type, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:foreign_address_ind, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:status, '')) + ' : ' + "
-#                         "CONVERT(NVARCHAR, ISNULL(:status_tax_year, '')))")
-#     result = session.execute(
-#         audit_hash_query, 
-#          {
-#             'tin': row['tin'],
-#             'tin_type': row['tin_type'],
-#             'customer_id': row['customer_id'],
-#             'name1': row['name1'],
-#             'name2': row['name2'],
-#             'address1': row['address1'],
-#             'address2': row['address2'],
-#             'city': row['city'],
-#             'state_province': row['state_province'],
-#             'postal_code': row['postal_code'],
-#             'source_file': row['source_file'],
-#             'freeze_electronic_consent_ind': row['freeze_electronic_consent_ind'],
-#             'entity_type': row['entity_type'],
-#             'foreign_address_ind': row['foreign_address_ind'],
-#             'status': row['status'],
-#             'status_tax_year': row['status_tax_year']
-#         }
-#     )
-    
-#     audit_hash = result.scalar()
-#     return audit_hash
-
-# def create_tin_hash(tin, session):
-#     encryptbykey_query = text("SELECT ENCRYPTBYKEY(KEY_GUID('PIIKey'), CONVERT(VARCHAR, :tin))")
-#     result = session.execute(encryptbykey_query, {'tin': tin})
-
-#     row = result.fetchone()
-#     return row[0]
-    
-# def add_tin_hash_to_df(df, session):
-#     print(f'Creating {len(df)} TIN Hashes')
-#     session.execute(text("OPEN SYMMETRIC KEY PIIKey DECRYPTION BY CERTIFICATE GTInhouse"))
-
-#     df = (
-#         df
-#         .assign(
-#             tin_hash = lambda df_: df_.tin.apply(lambda x: create_tin_hash(x, session))
-#         )
-#     )
-#     ### check that tin hashes are not None
-#     assert list(df.tin_hash.unique()) != [None]
-    
-#     session.execute(text("CLOSE SYMMETRIC KEY PIIKey"))
-    
-#     return df
-
-# def add_audit_hash_to_df(df, session):
-#     print(f'Creating {len(df)} Audit Hashes')
-#     df = (
-#         df
-#         .assign(
-#             audit_hash = lambda df_: df_.apply(lambda x: calculate_audit_hash(x, session), axis = 1)
-#         )
-#     )
-#     ### check that tin hashes are not None
-#     assert list(df.audit_hash.unique()) != [None]
-    
-#     return df
 def calculate_audit_hash_vectorized(row):
     concat_fields = " : ".join(
-        row[['tin',
-            'tin_type',
+        row[['tin_type',
             'customer_id',
             'name1',
             'name2',
@@ -124,80 +72,122 @@ def calculate_audit_hash_vectorized(row):
             'city',
             'state_province',
             'postal_code',
+            'tin',
             'source_file',
             'freeze_electronic_consent_ind',
             'entity_type',
             'foreign_address_ind',
             'status',
-            'status_tax_year']])
+            'status_tax_year',
+            ]].fillna('').astype(str))
     
-    return hashlib.sha256(concat_fields.encode("utf-8")).digest()
+    return hashlib.sha256(concat_fields.encode("utf-16le")).digest()
+    
 
-def add_audit_hash_to_df_vectorized(df):
+def add_audit_hash_to_df(df):
     print(f'Creating {len(df)} Audit Hashes')
-    df = df.fillna('')
-    df["audit_hash"] = df.apply(calculate_audit_hash_vectorized, axis=1)
-    assert list(df.audit_hash.unique()) != [None]
-    return df
+    
+    # df["audit_hash"] = [None] * len(df)
+    audit_hashes = []
+    for idx in tqdm(range(len(df)), desc="Creating Audit Hashes"):
+        audit_hashes.append(calculate_audit_hash_vectorized(df.iloc[idx]))
 
-def create_tin_hashes(df, session):
-    encryptbykey_query = text("SELECT tin, ENCRYPTBYKEY(KEY_GUID('PIIKey'), CONVERT(VARCHAR, tin)) AS tin_hash FROM (VALUES (:tins)) AS T(tin)")
-    tins = [{"tins": tin} for tin in df['tin']]
-    result = session.execute(encryptbykey_query, tins)
-    tin_hash_dict = {row[0]: row[1] for row in result}
-    return tin_hash_dict
+    assert list(set(audit_hashes)) != [None]
+    return audit_hashes
 
 
-def add_tin_hash_to_df_optimized(df, session):
-    print(f'Creating {len(df)} TIN Hashes')
+def add_tin_hash_to_df(df, session):
+    print(f'Encrypting {len(df)} TINs')
+
     session.execute(text("OPEN SYMMETRIC KEY PIIKey DECRYPTION BY CERTIFICATE GTInhouse"))
-
-    tin_hash_dict = create_tin_hashes(df, session)
-    df['tin_hash'] = df['tin'].map(tin_hash_dict)
-    assert list(df.tin_hash.unique()) != [None]
-
+    encryptbykey_query = text("""
+        SELECT tin, ENCRYPTBYKEY(KEY_GUID('PIIKey'), CONVERT(VARCHAR, tin)) AS tin_hash 
+        FROM (SELECT value AS tin FROM STRING_SPLIT(CAST(:tins AS NVARCHAR(MAX)), ',')) AS T
+    """)
+    tins = ','.join(df.tin.dropna().astype(str).tolist())
+    result = session.execute(encryptbykey_query, {"tins": tins}).fetchall()
     session.execute(text("CLOSE SYMMETRIC KEY PIIKey"))
+    
+    tin_hashes = df.tin.map(dict(result)).tolist()
+    assert list(set(tin_hashes)) != [None]
+
+    return tin_hashes
+
+def add_user_name_to_df(df, session):
+    select_user_name_query = text("""select user_name()""")
+    result = session.execute(select_user_name_query).fetchone()
+    user_name = result[0]
+    df['last_updated_by'] = user_name
     return df
 
+def check_if_map_tin_type(df):
+    tin_type_values = df.tin_type.unique()
 
-sqlalchemy_url = 'mssql+pyodbc:///?odbc_connect=Driver%3D%7BODBC+Driver+18+for+SQL+Server%7D%3BServer%3DPHX2-TIR-DB01%3BDatabase%3Dus_tax_reporting%3BTrusted_Connection%3Dyes%3B'
+    ### if 1 or 2 is not in, then take lower case tin types and make 1 for ssn and 2 for anything else
+    if not set([1, 2]).issubset(set(tin_type_values)):
+        df['tin_type'] = df['tin_type'].str.lower().apply(lambda x: 1 if x == 'ein' else 2)
 
-engine = create_engine(
-    sqlalchemy_url,
-    connect_args = {
-        "TrustServerCertificate": "yes"
-    }, echo=False)
+    return df
 
-Session = sessionmaker(engine)
+if __name__ == "__main__":
 
-with Session() as session:
-    csv_path = input("Enter the path to the csv file: ")
+    engine = create_engine(
+        config.get('SQLALCHEMY_URL'),
+        connect_args = {
+            "TrustServerCertificate": "yes"
+        }, echo=False)
+    
+    @event.listens_for(engine, "before_cursor_execute")
+    def receive_before_cursor_execute(conn, cursor, statement, params, context, executemany):
+        if executemany:
+            cursor.fast_executemany = True
 
-    ### read csv file from path, catch error and respond to user if does not exist
-    try:
-        df = pd.read_csv(csv_path, dtype=str)
-    except FileNotFoundError:
-        print("File not found, please try again.")
-        exit()
+    Session = sessionmaker(engine)
 
+    with Session() as session:
+        csv_path = input("Enter the path to the csv file: ")
 
-    # df = (
-    #     df
-    #     .fillna('')
-    #     .pipe(add_tin_hash_to_df, session = session)
-    #     .pipe(add_audit_hash_to_df, session = session)
-    # )
-    df = (
-        df
-        .fillna('')
-        .pipe(add_tin_hash_to_df_optimized, session=session)
-        .pipe(add_audit_hash_to_df_vectorized)
-    )
+        try:
+            df = pd.read_csv(csv_path, dtype=str)
+        except FileNotFoundError:
+            print("File not found, please try again.")
+            exit()
 
-    data_list = df.drop('tin', axis = 1).to_dict(orient='records')
+        tin_hashes = add_tin_hash_to_df(df, session)
+        audit_hashes = add_audit_hash_to_df(df)
 
-    session.bulk_insert_mappings(RecipientInfo, data_list)
-    session.commit()
+        df = (
+            df
+            .pipe(check_if_map_tin_type)
+            .pipe(add_user_name_to_df, session = session)
+            .assign(
+                tin_hash = tin_hashes,
+                audit_hash = audit_hashes,
+                last_updated = datetime.now(),
+            )
+            .replace(np.nan, None)
+        )
 
+        df = df.drop('tin', axis = 1)
+        data_list = df.to_dict(orient='records')
 
-#  ../../../../downloads/test_subset.csv
+        insert_sql = text(f'''
+            insert into test.recipient_info ({', '.join(df.columns)}) 
+            values ({', '.join([f':{x}' for x in df.columns])})'''
+        )
+
+        print('Inserting data into recipient_info')
+        try:
+            session.execute(insert_sql, data_list)
+           
+        except Exception as e:
+            sqlalchemy_logger.exception("An error occurred: %s", e)
+            raise
+
+        session.commit()
+
+        print(f'Inserted {len(data_list)} rows into recipient_info')
+
+    #  ../../../../downloads/test_subset.csv
+
+    #  ../../../../downloads/recipient_info_subset_4.csv

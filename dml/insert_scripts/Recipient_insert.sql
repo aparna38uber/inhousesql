@@ -52,16 +52,17 @@ SELECT
     ,HASHBYTES(
         'SHA2_256', 
         (
-            CONVERT(NVARCHAR,[tin_type]) + ' : ' 
-            + CONVERT(NVARCHAR,[customer_id]) + ' : ' 
-            + CONVERT(NVARCHAR,[name1]) + ' : ' 
-            + CONVERT(NVARCHAR,[name2]) + ' : ' 
-            + CONVERT(NVARCHAR,[address1]) + ' : ' 
-            + CONVERT(NVARCHAR,[address2]) + ' : ' 
-            + CONVERT(NVARCHAR,[city]) + ' : ' 
-            + CONVERT(NVARCHAR,[state_province]) + ' : ' 
-            + CONVERT(NVARCHAR,[postal_code]) + ' : ' 
-            + CONVERT(NVARCHAR,[tin])
+            CONVERT(NVARCHAR, COALESCE([tin_type], '')) + ' : ' 
+            + CONVERT(NVARCHAR, COALESCE([customer_id], '')) + ' : ' 
+            + CONVERT(NVARCHAR, COALESCE([name1], '')) + ' : ' 
+            + CONVERT(NVARCHAR, COALESCE([name2], '')) + ' : ' 
+            + CONVERT(NVARCHAR, COALESCE([address1], '')) + ' : ' 
+            + CONVERT(NVARCHAR, COALESCE([address2], '')) + ' : ' 
+            + CONVERT(NVARCHAR, COALESCE([city], '')) + ' : ' 
+            + CONVERT(NVARCHAR, COALESCE([state_province], '')) + ' : ' 
+            + CONVERT(NVARCHAR, COALESCE([postal_code], '')) + ' : '
+            -- + CONVERT(NVARCHAR, COALESCE([email], '')) + ' : '
+            + CONVERT(NVARCHAR, COALESCE([tin], ''))
         )
     )
 FROM dbo.[recipient_info_subset_1]
